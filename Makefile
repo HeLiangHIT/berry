@@ -1,16 +1,14 @@
-CFLAGS	 = -Wall -Wextra -std=c89 -O0 -g
+CFLAGS	 = -Wall -Wextra -std=c99 -pedantic-errors -O2
+LIBS	 =  -lm
 TARGET	 = berry
 CC	 = gcc
 
 INCPATH	 = src default
 SRCPATH	 = src default
 
-ifneq ($(OS), Windows_NT)
-  ifeq ($(shell uname), Linux) # Linux
-    LIBS = -lreadline
-  else ifeq  ($(shell uname), Darwin) # MacOS
-    LIBS = -lreadline
-  endif
+ifneq ($(OS), Windows_NT) # not windows
+    CFLAGS += -DUSE_READLINE_LIB
+    LIBS += -lreadline
 endif
 
 SRCS	 = $(foreach dir, $(SRCPATH), $(wildcard $(dir)/*.c))
@@ -19,6 +17,9 @@ DEPS	 = $(patsubst %.c, %.d, $(SRCS))
 CFLAGS	+= $(foreach dir, $(INCPATH), -I"$(dir)")
 
 all: $(TARGET)
+
+debug: CFLAGS += -O0 -g -DBE_DEBUG
+debug: $(TARGET)
 
 $(TARGET): $(OBJS)
 	@ echo [Linking...]

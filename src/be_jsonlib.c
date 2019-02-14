@@ -1,6 +1,8 @@
-#include "be_jsonlib.h"
+#include "be_object.h"
 #include "be_mem.h"
 #include <string.h>
+
+#if BE_USE_JSON_MODULE
 
 #define MAX_INDENT      12
 #define INDENT_WIDTH    4
@@ -280,10 +282,10 @@ static int m_json_load(bvm *vm)
     if (be_isstring(vm, 1)) {
         const char *json = be_tostring(vm, 1);
         if (parser_value(vm, json)) {
-            return be_return(vm);
+            be_return(vm);
         }
     }
-    return be_returnnil(vm);
+    be_return_nil(vm);
 }
 
 static void make_indent(bvm *vm, int stridx, int indent)
@@ -302,7 +304,7 @@ static void make_indent(bvm *vm, int stridx, int indent)
 
 static void object_tostr(bvm *vm, int *indent, int idx, int fmt)
 {
-    be_getmember(vm, idx, "__data__");
+    be_getmember(vm, idx, ".data");
     be_pushstring(vm, fmt ? "{\n" : "{");
     be_pushiter(vm, -2); /* map iterator use 1 register */
     *indent += fmt;
@@ -341,7 +343,7 @@ static void object_tostr(bvm *vm, int *indent, int idx, int fmt)
 
 static void array_tostr(bvm *vm, int *indent, int idx, int fmt)
 {
-    be_getmember(vm, idx, "__data__");
+    be_getmember(vm, idx, ".data");
     be_pushstring(vm, fmt ? "[\n" : "[");
     be_pushiter(vm, -2);
     *indent += fmt;
@@ -372,17 +374,17 @@ static void array_tostr(bvm *vm, int *indent, int idx, int fmt)
 
 static void json2str(bvm *vm, int *indent, int idx, int fmt)
 {
-    if (is_object(vm, "map", idx)) {
+    if (is_object(vm, "map", idx)) { /* convert to json object */
         object_tostr(vm, indent, idx, fmt);
-    } else if (is_object(vm, "list", idx)) {
+    } else if (is_object(vm, "list", idx)) { /* convert to json array */
         array_tostr(vm, indent, idx, fmt);
-    } else if (be_isnil(vm, idx)) {
+    } else if (be_isnil(vm, idx)) { /* convert to json null */
         be_pushstring(vm, "null");
-    } else if (be_isstring(vm, idx)) { /* add '"" to strings */
-        be_pushfstring(vm, "\"%s\"", be_tostring(vm, idx));
-    } else {
+    } else if (be_isnumber(vm, idx) || be_isbool(vm, idx)) { /* convert to json number and boolean */
         be_tostring(vm, idx);
         be_pushvalue(vm, idx); /* push to top */
+    } else { /* convert to string and add '"" to string */
+        be_pushfstring(vm, "\"%s\"", be_tostring(vm, idx));
     }
 }
 
@@ -394,11 +396,14 @@ static int m_json_dump(bvm *vm)
         fmt = !strcmp(be_tostring(vm, 2), "format");
     }
     json2str(vm, &indent, 1, fmt);
-    return be_return(vm);
+    be_return(vm);
 }
 
-void be_json_init(bvm *vm)
-{
-    be_regcfunc(vm, "json_load", m_json_load);
-    be_regcfunc(vm, "json_dump", m_json_dump);
-}
+be_native_module_attr_table(attr_table) {
+    be_native_module_function("load", m_json_load),
+    be_native_module_function("dump", m_json_dump)
+};
+
+be_define_native_module(json, attr_table);
+
+#endif /* BE_USE_JSON_MODULE */

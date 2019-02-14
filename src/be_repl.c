@@ -6,9 +6,20 @@ static int try_return(bvm *vm, const char *line)
 {
     int res;
     be_pushfstring(vm, "return (%s)", line);
-    res = be_loadstring(vm, be_tostring(vm, -1)); /* compile line */
+    line = be_tostring(vm, -1);
+    res = be_loadbuffer(vm, "stdin", line, strlen(line)); /* compile line */
     be_removeone(vm, -2); /* remove source string */
     return res;
+}
+
+static int is_multline(bvm *vm)
+{
+    const char *msg = be_tostring(vm, -1);
+    size_t len = strlen(msg);
+    if (len > 5) {
+        return !strcmp(msg + len - 5, "'EOS'");
+    }
+    return 0;
 }
 
 static int compile(bvm *vm, const char *line, breadline getl)
@@ -21,7 +32,7 @@ static int compile(bvm *vm, const char *line, breadline getl)
             const char *src = be_tostring(vm, -1);
             /* compile source line */
             res = be_loadbuffer(vm, "stdin", src, strlen(src));
-            if (!res || !strstr(be_tostring(vm, -1), "'EOS'")) {
+            if (!res || !is_multline(vm)) {
                 be_removeone(vm, -2);
                 return res;
             }
@@ -35,22 +46,37 @@ static int compile(bvm *vm, const char *line, breadline getl)
     return res;
 }
 
-void be_repl(bvm *vm, breadline getl)
+int be_repl(bvm *vm, breadline getl)
 {
     const char *line;
     while ((line = getl("> ")) != NULL) {
         if (compile(vm, line, getl)) {
-            be_printf("%s\n", be_tostring(vm, -1)); /* some error */
+            be_writestring(be_tostring(vm, -1)); /* some error */
+            be_writenewline();
             be_pop(vm, 1);
-        } else if (be_pcall(vm, 0)) { /* vm run error */
-            be_printf("%s\n", be_tostring(vm, -1));
-            be_pop(vm, 2);
         } else {
-            if (!be_isnil(vm, -1)) {
-                be_printf("%s\n", be_tostring(vm, -1));
+            switch (be_pcall(vm, 0)) {
+            case BE_OK:
+                if (!be_isnil(vm, -1)) {
+                    be_writestring(be_tostring(vm, -1));
+                    be_writenewline();
+                }
+                be_pop(vm, 1);
+                break;
+            case BE_EXEC_ERROR: /* vm run error */
+                be_writestring(be_tostring(vm, -1));
+                be_writenewline();
+                be_pop(vm, 2);
+                break;
+            case BE_EXIT:
+                return be_toint(vm, -1);
+            case BE_MALLOC_FAIL:
+                return -1;
+            default:
+                break;
             }
-            be_pop(vm, 1);
         }
     }
-    be_printf("\n");
+    be_writenewline();
+    return 0;
 }

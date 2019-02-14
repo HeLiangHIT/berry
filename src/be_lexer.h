@@ -1,5 +1,5 @@
-#ifndef __BE_LEXER_H
-#define __BE_LEXER_H
+#ifndef BE_LEXER_H
+#define BE_LEXER_H
 
 #include "be_object.h"
 
@@ -58,7 +58,9 @@ typedef enum {
     KeyFalse,       /* keyword false */
     KeyNil,         /* keyword nil */
     KeyVar,         /* keyword var */
-    KeyDo           /* keyword do */
+    KeyDo,          /* keyword do */
+    KeyImport,      /* keyword import */
+    KeyAs           /* keyword as */
 } btokentype;
 
 typedef struct btoken {

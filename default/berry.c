@@ -2,9 +2,8 @@
 #include "be_repl.h"
 #include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
 
-#if defined(__linux) || defined(__unix) || defined(__APPLE__)
+#if defined(USE_READLINE_LIB)
     #include <readline/readline.h>
     #include <readline/history.h>
 #endif
@@ -27,11 +26,19 @@
     #define COMPILER  "GCC " __VERSION__
 #elif defined(_MSC_VER)
     #define COMPILER  "MSVC"
+#elif defined(__CC_ARM)
+    #define COMPILER  "ARMCC"
+#elif defined(__ICCARM__)
+    #define COMPILER  "IAR"
 #else
     #define COMPILER  "Unknown Compiler"
 #endif
 
+#if BE_DEBUG
+#define FULL_VERSION "Berry " BERRY_VERSION " (debug)"
+#else
 #define FULL_VERSION "Berry " BERRY_VERSION
+#endif
 
 #define repl_prelude                                            \
     FULL_VERSION " (build in " __DATE__ ", " __TIME__ ")\n"     \
@@ -50,13 +57,14 @@
 
 static const char* get_line(const char *prompt)
 {
-#if defined(__linux) || defined(__unix) || defined(__APPLE__)
+#if defined(USE_READLINE_LIB)
     const char *line = readline(prompt);
     add_history(line);
     return line;
 #else
     static char buffer[1000];
-    printf(prompt);
+    fputs(prompt, stdout);
+    fflush(stdout);
     if (fgets(buffer, sizeof(buffer), stdin)) {
         return buffer;
     }
@@ -90,12 +98,24 @@ static int dofile(bvm *vm)
             printf("error: memory allocation failed.\n");
             return 2;
         }
-        res = be_loadbuffer(vm, name, buffer, len) || be_pcall(vm, 0);
+        res = be_loadbuffer(vm, name, buffer, len);
         free(buffer);
-        if (res) {
+        res = res == BE_OK ? be_pcall(vm, 0) : res;
+        switch (res) {
+        case BE_OK:
+            return 0;
+        case BE_SYNTAX_ERROR: /* syntax error */
+        case BE_EXEC_ERROR: /* vm run error */
             printf("%s\n", be_tostring(vm, -1));
+            return 1;
+        case BE_EXIT: /* return exit code */
+            return be_toint(vm, -1);
+        case BE_MALLOC_FAIL:
+            printf("error: malloc fail.\n");
+            return -1;
+        default: /* unkonw result */
+            return 2;
         }
-        return 0;
     }
     printf("error: can not open file '%s'.\n", name);
     return 1;
@@ -133,15 +153,15 @@ static int analysis_args(bvm *vm)
 {
     int args = check_args(vm);
     if (args & arg_v) {
-        be_printf(FULL_VERSION "\n");
+        be_writestring(FULL_VERSION "\n");
         return 0;
     }
     if (args & arg_h) {
-        be_printf(help_information);
+        be_writestring(help_information);
         return 0;
     }
     if (args & arg_i) {
-        be_printf(repl_prelude);
+        be_writestring(repl_prelude);
     }
     if (be_top(vm) > 0) {
         int res = dofile(vm);
@@ -151,7 +171,7 @@ static int analysis_args(bvm *vm)
         be_pop(vm, be_top(vm));
     }
     if (args & arg_i) {
-        be_repl(vm, get_line);
+        return be_repl(vm, get_line);
     }
     return 0;
 }
@@ -161,7 +181,6 @@ int main(int argc, char *argv[])
     int i = 0, res;
     bvm *vm = be_vm_new();
     be_loadlibs(vm);
-    srand((unsigned)time(NULL)); /* Set the random seed to system time */
     for (i = 1; i < argc; ++i) {
         be_pushstring(vm, argv[i]);
     }

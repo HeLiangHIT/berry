@@ -1,17 +1,32 @@
-#include "be_iolib.h"
-#include <stdio.h>
+#include "be_object.h"
+#include "be_mem.h"
 
-static int l_input(bvm *vm)
+#ifdef BE_USE_IO_MODULE
+
+#define READLINE_STEP       100
+
+static int m_input(bvm *vm)
 {
-    char str[128];
-    if (fgets(str, sizeof(str), stdin)) {
-        be_pushstring(vm, str);
-        return be_return(vm);
+    size_t pos = 0, size = READLINE_STEP;
+    char *buffer = be_malloc(size);
+    char *res = be_fgets(stdin, buffer, (int)size);
+    while (res) {
+        pos += strlen(buffer + pos) - 1;
+        if (!pos || buffer[pos] == '\n') {
+            break;
+        }
+        size += READLINE_STEP;
+        buffer = be_realloc(buffer, size);
+        res = be_fgets(stdin, buffer + pos + 1, READLINE_STEP);
     }
-    return be_returnnil(vm);
+    be_pushstring(vm, buffer);
+    be_return(vm);
 }
 
-void be_loadiolib(bvm *vm)
-{
-    be_regcfunc(vm, "input", l_input);
-}
+be_native_module_attr_table(attr_table) {
+    be_native_module_function("input", m_input)
+};
+
+be_define_native_module(io, attr_table);
+
+#endif /* BE_USE_IO_MODULE */

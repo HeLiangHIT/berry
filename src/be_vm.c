@@ -6,6 +6,7 @@
 #include "be_func.h"
 #include "be_vector.h"
 #include "be_map.h"
+#include "be_module.h"
 #include "be_mem.h"
 #include "be_var.h"
 #include "be_gc.h"
@@ -18,7 +19,7 @@
 #define NOT_METHOD      BE_NONE
 
 #define vm_error(vm, fmt, ...) \
-    be_debug_error((vm), BE_EXEC_ERROR, (fmt), __VA_ARGS__)
+    be_debug_error(vm, BE_EXEC_ERROR, be_pushfstring(vm, fmt, __VA_ARGS__))
 
 #define RA(i)   (vm->reg + IGET_RA(i))
 #define RKB(i)  ((isKB(i) ? curcl(vm)->proto->ktab \
@@ -29,7 +30,7 @@
 #define var2real(_v) \
     (var_isreal(_v) ? (_v)->v.r : (breal)(_v)->v.i)
 
-#define cast_bool(v)        ((v) ? btrue : bfalse)
+#define val2bool(v)        ((v) ? btrue : bfalse)
 #define ibinop(op, a, b)    ((a)->v.i op (b)->v.i)
 
 #define define_function(name, block) \
@@ -64,7 +65,7 @@
     } else if (var_isbool(a) || var_isbool(b)) { \
         var_setbool(dst, var_tobool(a) op var_tobool(b)); \
     } else if (var_isnil(a) || var_isnil(b)) { \
-        bbool res = var_type(a) op var_type(b); \
+        int res = var_type(a) op var_type(b); \
         var_setbool(dst, res); \
     } else if (var_isstr(a) && var_isstr(b)) { \
         var_setbool(dst, opstr be_eqstr(a->v.s, b->v.s)); \
@@ -140,7 +141,7 @@ static void precall(bvm *vm, bvalue *func, int nstack, int mode)
 static bbool obj2bool(bvm *vm, bvalue *obj)
 {
     bvalue *top = vm->top;
-    bstring *tobool = be_newconststr(vm, "tobool");
+    bstring *tobool = be_newstr(vm, "tobool");
     /* get operator method */
     if (be_instance_member(obj->v.p, tobool, top)) {
         top[1] = *obj; /* move self to argv[0] */
@@ -159,9 +160,9 @@ static bbool var2bool(bvm *vm, bvalue *v)
     case BE_BOOL:
         return v->v.b;
     case BE_INT:
-        return cast_bool(v->v.i);
+        return val2bool(v->v.i);
     case BE_REAL:
-        return cast_bool(v->v.r);
+        return val2bool(v->v.r);
     case BE_INSTANCE:
         return obj2bool(vm, v);
     default:
@@ -197,12 +198,12 @@ static void object_binop(bvm *vm,
 {
     bvalue *top = vm->top;
     /* get operator method */
-    obj_method(vm, a, be_newconststr(vm, op));
+    obj_method(vm, a, be_newstr(vm, op));
     top[1] = *a; /* move self to argv[0] */
     top[2] = *b; /* move other to argv[1] */
-    vm->top++;   /* prevent collection results */
+    be_incrtop(vm); /* prevent collection results */
     be_dofunc(vm, top, 2); /* call method 'item' */
-    vm->top--;
+    be_stackpop(vm, 1);
     *RA(ins) = *vm->top; /* copy result to dst */
 }
 static void object_unop(bvm *vm,
@@ -210,7 +211,7 @@ static void object_unop(bvm *vm,
 {
     bvalue *top = vm->top;
     /* get operator method */
-    obj_method(vm, src, be_newconststr(vm, op));
+    obj_method(vm, src, be_newstr(vm, op));
     top[1] = *src; /* move self to argv[0] */
     be_dofunc(vm, top, 1); /* call method 'item' */
     *RA(ins) = *vm->top; /* copy result to dst */
@@ -377,7 +378,7 @@ static void i_range(bvm *vm, binstruction ins)
     bvalue *b = RKB(ins), *c = RKC(ins);
     bvalue *top = vm->top;
     /* get method 'item' */
-    int idx = be_globalvar_find(vm, be_newconststr(vm, "range"));
+    int idx = be_globalvar_find(vm, be_newstr(vm, "range"));
     top[0] = vm->global[idx];
     top[1] = *b; /* move lower to argv[0] */
     top[2] = *c; /* move upper to argv[1] */
@@ -464,7 +465,7 @@ static void i_call(bvm *vm, binstruction ins)
         break;
     }
     case BE_NTVFUNC: {
-        bcfunction f = cast(bcfunction, var_toobj(var));
+        bntvfunc f = var_tontvfunc(var);
         push_native(vm, var, argc, mode);
         f(vm); /* call C primitive function */
         ret_native(vm);
@@ -492,6 +493,16 @@ static void i_getmember(bvm *vm, binstruction ins)
     bvalue *a = RA(ins), *b = RKB(ins), *c = RKC(ins);
     if (var_isinstance(b) && var_isstr(c)) {
         obj_attribute(vm, b, var_tostr(c), a);
+    } else if (var_ismodule(b) && var_isstr(c)) {
+        bstring *attr = var_tostr(c);
+        bmodule *module = var_toobj(b);
+        bvalue *v = be_module_attr(module, attr);
+        if (v) {
+            *a = *v;
+        } else {
+            vm_error(vm, "module '%s' has no attribute '%s'",
+                be_module_name(module), str(attr));
+        }
     } else {
         attribute_error(vm, b, c, "attribute");
     }
@@ -513,6 +524,17 @@ static void i_getmethod(bvm *vm, binstruction ins)
         } else {
             vm_error(vm, "class '%s' has no method '%s'",
                 str(be_instance_name(obj)), str(attr));
+        }
+    } else if (var_ismodule(b) && var_isstr(c)) {
+        bstring *attr = var_tostr(c);
+        bmodule *module = var_toobj(b);
+        bvalue *src = be_module_attr(module, attr);
+        if (src) {
+            var_settype(a, NOT_METHOD);
+            a[1] = *src;
+        } else {
+            vm_error(vm, "module '%s' has no method '%s'",
+                be_module_name(module), str(attr));
         }
     } else {
         attribute_error(vm, b, c, "method");
@@ -540,7 +562,7 @@ static void i_getindex(bvm *vm, binstruction ins)
     if (var_isinstance(b)) {
         bvalue *top = vm->top;
         /* get method 'item' */
-        obj_method(vm, b, be_newconststr(vm, "item"));
+        obj_method(vm, b, be_newstr(vm, "item"));
         top[1] = *b; /* move object to argv[0] */
         top[2] = *c; /* move key to argv[1] */
         vm->top += 3;   /* prevent collection results */
@@ -560,7 +582,7 @@ static void i_setindex(bvm *vm, binstruction ins)
     if (var_isinstance(a)) {
         bvalue *top = vm->top;
         /* get method 'setitem' */
-        obj_method(vm, a, be_newconststr(vm, "setitem"));
+        obj_method(vm, a, be_newstr(vm, "setitem"));
         top[1] = *a; /* move object to argv[0] */
         top[2] = *b; /* move key to argv[1] */
         top[3] = *c; /* move src to argv[2] */
@@ -592,6 +614,22 @@ static void i_close(bvm *vm, binstruction ins)
     be_upvals_close(vm, RA(ins));
 }
 
+static void i_import(bvm *vm, binstruction ins)
+{
+    bvalue *dst = RA(ins), *b = RKB(ins);
+    if (var_isstr(b)) {
+        bmodule *m = be_module_load(vm, var_tostr(b), dst);
+        if (m == NULL) {
+            vm_error(vm, "module '%s' does not found",
+                str(var_tostr(b)));
+        }
+    } else {
+        vm_error(vm,
+            "import '%s' does not support import",
+            be_vtype2str(b));
+    }
+}
+
 bvm* be_vm_new(void)
 {
     bvm *vm = be_malloc(sizeof(bvm));
@@ -599,6 +637,7 @@ bvm* be_vm_new(void)
     be_string_init(vm);
     be_globalvar_init(vm);
     be_stack_init(&vm->callstack, sizeof(bcallframe));
+    be_stack_init(&vm->refstack, sizeof(binstance*));
     vm->stack = be_malloc(sizeof(bvalue) * BE_STACK_FREE_MIN);
     vm->stacktop = vm->stack + BE_STACK_FREE_MIN;
     vm->cf = NULL;
@@ -607,6 +646,7 @@ bvm* be_vm_new(void)
     vm->reg = vm->stack;
     vm->top = vm->reg;
     vm->errjmp = NULL;
+    vm->modulelist = NULL;
     return vm;
 }
 
@@ -615,6 +655,7 @@ void be_vm_delete(bvm *vm)
     be_gc_deleteall(vm);
     be_string_deleteall(vm);
     be_stack_delete(&vm->callstack);
+    be_stack_delete(&vm->refstack);
     be_free(vm->stack);
     be_globalvar_deinit(vm);
     be_free(vm);
@@ -662,6 +703,7 @@ static void vm_exec(bvm *vm)
         case OP_SETIDX: i_setindex(vm, ins); break;
         case OP_SETSUPER: i_setsuper(vm, ins); break;
         case OP_CLOSE: i_close(vm, ins); break;
+        case OP_IMPORT: i_import(vm, ins); break;
         case OP_RET: i_return(vm, ins); goto retpoint;
         default: retpoint:
             if (vm->cf == NULL) {
@@ -700,7 +742,7 @@ static void do_ntvclos(bvm *vm, bvalue *reg, int argc)
 
 static void do_ntvfunc(bvm *vm, bvalue *reg, int argc)
 {
-    bcfunction f = cast(bcfunction, var_toobj(reg));
+    bntvfunc f = var_tontvfunc(reg);
     push_native(vm, reg, argc, 0);
     f(vm); /* call C primitive function */
     ret_native(vm);
@@ -709,9 +751,9 @@ static void do_ntvfunc(bvm *vm, bvalue *reg, int argc)
 static void do_class(bvm *vm, bvalue *reg, int argc)
 {
     if (be_class_newobj(vm, var_toobj(reg), reg, ++argc)) {
-        vm->top++;
+        be_incrtop(vm);
         be_dofunc(vm, reg + 1, argc);
-        vm->top--;
+        be_stackpop(vm, 1);
     }
 }
 

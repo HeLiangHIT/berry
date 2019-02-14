@@ -5,12 +5,17 @@
 #include <string.h>
 
 #define next(_s)    cast(void*, cast(bstring*, (_s)->next))
+#define sstr(_s)    cast(char*, cast(bsstring*, _s) + 1)
+#define lstr(_s)    cast(char*, cast(blstring*, _s) + 1)
+#define cstr(_s)    (cast(bcstring*, s)->s)
 
 struct bstringtable {
     bstring **table;
     int count; /* string count */
     int size;
 };
+
+extern const struct bconststrtab be_const_string_table;
 
 int be_eqstr(bstring *s1, bstring *s2)
 {
@@ -20,8 +25,10 @@ int be_eqstr(bstring *s1, bstring *s2)
     }
     slen = s1->slen;
     /* long string */
-    if (slen == 255 && slen == s2->slen) { 
-        return cast(blstring*, s1)->llen == cast(blstring*, s2)->llen && !strcmp(s1->s, s2->s);
+    if (slen == 255 && slen == s2->slen) {
+        blstring *ls1 = cast(blstring*, s1);
+        blstring *ls2 = cast(blstring*, s2);
+        return ls1->llen == ls2->llen && !strcmp(lstr(ls1), lstr(ls2));
     }
     return 0;
 }
@@ -88,29 +95,39 @@ void be_string_deleteall(bvm *vm)
     be_free(tab);
 }
 
-bstring* createstrobj(bvm *vm, size_t len, int islong, int isk)
+bstring* createstrobj(bvm *vm, size_t len, int islong)
 {
+    char *str;
     size_t size = (islong ? sizeof(blstring)
-                : sizeof(bstring)) + (isk ? 0 : len + 1);
+                : sizeof(bsstring)) + len + 1;
     bgcobject *gco = be_gc_newstr(vm, size, islong);
     bstring *s = cast_str(gco);
     if (s) {
-        if (!isk) {
-            char *str;
-            if (islong) {
-                str = cast(char*, (cast(blstring*, s) + 1));
-            } else {
-                str = cast(char*, (cast(bstring*, s) + 1));
-            }
-            str[len] = '\0';
-            s->s = str;
-        }
         s->slen = islong ? 255 : (bbyte)len;
+        if (islong) {
+            str = cast(char*, lstr(s));
+        } else {
+            str = cast(char*, sstr(s));
+        }
+        str[len] = '\0';
     }
     return s;
 }
 
-static bstring* newshortstr(bvm *vm, const char *str, size_t len, int isk)
+static bstring* find_conststr(const char *str, size_t len)
+{
+    const struct bconststrtab *tab = &be_const_string_table;
+    uint32_t hash = be_strhash(str, len);
+    bcstring *s = (bcstring*)tab->table[hash & (tab->size - 1)];
+    for (; s != NULL; s = next(s)) {
+        if (len == s->slen && !strncmp(str, s->s, len)) {
+            return (bstring*)s;
+        }
+    }
+    return NULL;
+}
+
+static bstring* newshortstr(bvm *vm, const char *str, size_t len)
 {
     bstring *s;
     int size = vm->strtab->size;
@@ -118,16 +135,12 @@ static bstring* newshortstr(bvm *vm, const char *str, size_t len, int isk)
     bstring **list = vm->strtab->table + (hash & (size - 1));
 
     for (s = *list; s != NULL; s = next(s)) {
-        if (len == s->slen && !strncmp(str, s->s, len)) {
+        if (len == s->slen && !strncmp(str, sstr(s), len)) {
             return s;
         }
     }
-    s = createstrobj(vm, len, 0, isk);
-    if (isk) {
-        s->s = str;
-    } else {
-        strncpy((char*)s->s, str, len);
-    }
+    s = createstrobj(vm, len, 0);
+    strncpy(cast(char*, sstr(s)), str, len);
     s->extra = 0;
     s->next = cast(void*, *list);
     *list = s;
@@ -138,19 +151,15 @@ static bstring* newshortstr(bvm *vm, const char *str, size_t len, int isk)
     return s;
 }
 
-static bstring* newlongstr(bvm *vm, const char *str, size_t len, int isk)
+static bstring* newlongstr(bvm *vm, const char *str, size_t len)
 {
     bstring *s;
     blstring *ls;
-    s = createstrobj(vm, len, 1, isk);
+    s = createstrobj(vm, len, 1);
     ls = cast(blstring*, s);
     s->extra = 0;
     ls->llen = cast_int(len);
-    if (isk) {
-        s->s = str;
-    } else {
-        strncpy((char*)s->s, str, len);
-    }
+    strncpy(cast(char*, lstr(s)), str, len);
     return s;
 }
 
@@ -162,18 +171,10 @@ bstring* be_newstr(bvm *vm, const char *str)
 bstring* be_newstrn(bvm *vm, const char *str, size_t len)
 {
     if (len <= SHORT_STR_MAX_LEN) {
-        return newshortstr(vm, str, len, 0);
+        bstring *s = find_conststr(str, len);
+        return s ? s : newshortstr(vm, str, len);
     }
-    return newlongstr(vm, str, len, 0); /* long string */
-}
-
-bstring* be_newconststr(bvm *vm, const char *str)
-{
-    size_t len = strlen(str);
-    if (len <= SHORT_STR_MAX_LEN) {
-        return newshortstr(vm, str, len, 1);
-    }
-    return newlongstr(vm, str, len, 1); /* long string */
+    return newlongstr(vm, str, len); /* long string */
 }
 
 void be_gcstrtab(bvm *vm)
@@ -202,4 +203,15 @@ void be_gcstrtab(bvm *vm)
     if (strtab->count < size >> 2 && size > 8) {
         resize(vm, size >> 1);
     }
+}
+
+const char* be_str2cstr(bstring *s)
+{
+    if (gc_isconst(s)) {
+        return cstr(s);
+    }
+    if (s->slen == 255) {
+        return lstr(s);
+    }
+    return sstr(s);
 }

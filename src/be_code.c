@@ -127,10 +127,17 @@ static void dischargejpc(bfuncinfo *finfo)
     finfo->jpc = NO_JUMP;
 }
 
-static int appendjump(bfuncinfo *finfo, bopcode op, int reg)
+static int appendjump(bfuncinfo *finfo, bopcode op, bexpdesc *e)
 {
     int j, jpc = finfo->jpc;
+    int reg = e ? var2anyreg(finfo, e) : 0;
     finfo->jpc = NO_JUMP;
+    if (isK(reg)) {
+        reg = be_code_allocregs(finfo, 1);
+        code_move(finfo, reg, e->v.idx);
+        e->v.idx = reg;
+        e->type = ETREG;
+    }
     j = codeABx(finfo, op, reg, NO_JUMP + IsBx_MAX);
     be_code_conjump(finfo, &j, jpc);
     return j;
@@ -138,7 +145,7 @@ static int appendjump(bfuncinfo *finfo, bopcode op, int reg)
 
 int be_code_jump(bfuncinfo *finfo)
 {
-    return appendjump(finfo, OP_JMP, 0);
+    return appendjump(finfo, OP_JMP, NULL);
 }
 
 void be_code_jumpto(bfuncinfo *finfo, int dst)
@@ -148,8 +155,7 @@ void be_code_jumpto(bfuncinfo *finfo, int dst)
 
 void be_code_jumpbool(bfuncinfo *finfo, bexpdesc *e, int jture)
 {
-    int reg = var2anyreg(finfo, e); /* get result register */
-    int pc = appendjump(finfo, jumpboolop(e, jture), reg);
+    int pc = appendjump(finfo, jumpboolop(e, jture), e);
     be_code_conjump(finfo, jture ? &e->t : &e->f, pc);
     be_code_patchjump(finfo, jture ? e->f : e->t);
     free_expreg(finfo, e);
@@ -204,21 +210,27 @@ static int newconst(bfuncinfo *finfo, bvalue *k)
 static int findconst(bfuncinfo *finfo, bexpdesc *e)
 {
     int i, count = be_vector_count(&finfo->kvec);
+    /* if the constant table is too large, the lookup
+     * operation will become very time consuming.
+     * so only search the constant table for the
+     * previous value.
+     **/
+    count = count < 50 ? count : 50;
     for (i = 0; i < count; ++i) {
         bvalue *k = be_vector_at(&finfo->kvec, i);
         switch (e->type) {
         case ETINT:
-            if (k->type == BE_INT && k->v.i == e->v.i) {
+            if (var_isint(k) && k->v.i == e->v.i) {
                 return i;
             }
             break;
         case ETREAL:
-            if (k->type == BE_REAL && k->v.r == e->v.r) {
+            if (var_isreal(k) && k->v.r == e->v.r) {
                 return i;
             }
             break;
         case ETSTRING:
-            if (k->type == BE_STRING && be_eqstr(k->v.p, e->v.s)) {
+            if (var_isstr(k) && be_eqstr(k->v.p, e->v.s)) {
                 return i;
             }
             break;
@@ -252,8 +264,14 @@ static int exp2const(bfuncinfo *finfo, bexpdesc *e)
         }
         idx = newconst(finfo, &k);
     }
-    e->type = ETCONST;
-    e->v.idx = setK(idx);
+    if (idx < 256) {
+        e->type = ETCONST;
+        e->v.idx = setK(idx);
+    } else { /* index value is too large */
+        e->type = ETREG;
+        e->v.idx = be_code_allocregs(finfo, 1);
+        codeABx(finfo, OP_LDCONST, e->v.idx, idx);
+    }
     return e->v.idx;
 }
 
@@ -310,7 +328,7 @@ static int var2reg(bfuncinfo *finfo, bexpdesc *e, int dst)
     case ETINDEX:
         dst = code_suffix(finfo, OP_GETIDX, e, dst);
         break;
-    case ETLOCAL: case ETREG:
+    case ETLOCAL: case ETREG: case ETCONST:
         return e->v.idx;
     default:
         return dst; /* error */
@@ -329,7 +347,8 @@ static int exp2reg(bfuncinfo *finfo, bexpdesc *e, int dst)
     if (hasjump(e)) {
         int pcf = NO_JUMP;  /* position of an eventual LOAD false */
         int pct = NO_JUMP;  /* position of an eventual LOAD true */
-        int jpt = appendjump(finfo, jumpboolop(e, 1), e->v.idx);
+        int jpt = appendjump(finfo, jumpboolop(e, 1), e);
+        reg = e->v.idx;
         be_code_conjump(finfo, &e->t, jpt);
         pcf = code_bool(finfo, reg, 0, 1);
         pct = code_bool(finfo, reg, 1, 0);
@@ -600,4 +619,19 @@ void be_code_setsuper(bfuncinfo *finfo, bexpdesc *c, bexpdesc *s)
     int self = exp2anyreg(finfo, c);
     int super = exp2anyreg(finfo, s);
     codeABC(finfo, OP_SETSUPER, self, super, 0);
+}
+
+void be_code_import(bfuncinfo *finfo, bexpdesc *m, bexpdesc *v)
+{
+    int dst, src = exp2anyreg(finfo, m);
+    if (v->type == ETLOCAL) {
+        dst = v->v.idx;
+        codeABC(finfo, OP_IMPORT, dst, src, 0);
+    } else {
+        dst = be_code_allocregs(finfo, 1);
+        codeABC(finfo, OP_IMPORT, dst, src, 0);
+        m->type = ETREG;
+        m->v.idx = dst;
+        be_code_setvar(finfo, v, m);
+    }
 }

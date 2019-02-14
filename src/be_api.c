@@ -15,7 +15,6 @@
 #include <stdlib.h>
 #include <stdarg.h>
 
-#define pushtop(vm)     ((vm)->top++)
 #define retreg(vm)      ((vm)->cf->func)
 
 static bvalue* index2value(bvm *vm, int idx)
@@ -26,10 +25,10 @@ static bvalue* index2value(bvm *vm, int idx)
     return vm->top + idx;
 }
 
-static void class_init(bvm *vm, bclass *c, const bmemberinfo *lib)
+static void class_init(bvm *vm, bclass *c, const bnfuncinfo *lib)
 {
     while (lib->name) {
-        bstring *s = be_newconststr(vm, lib->name);
+        bstring *s = be_newstr(vm, lib->name);
         if (lib->function) { /* method */
             be_prim_method_bind(c, s, lib->function);
         } else {
@@ -37,23 +36,24 @@ static void class_init(bvm *vm, bclass *c, const bmemberinfo *lib)
         }
         ++lib;
     }
+    be_map_release(vm, c->members); /* clear space */
 }
 
-void be_regcfunc(bvm *vm, const char *name, bcfunction f)
+void be_regcfunc(bvm *vm, const char *name, bntvfunc f)
 {
-    bstring *s = be_newconststr(vm, name);
+    bstring *s = be_newstr(vm, name);
     int idx = be_globalvar_find(vm, s);
     if (idx == -1) { /* new function */
         bvalue *var;
         idx = be_globalvar_new(vm, s);
         var = be_globalvar(vm, idx);
-        var_setntvfunc(var, (void*)f);
+        var_setntvfunc(var, f);
     } /* else error */
 }
 
-void be_regclass(bvm *vm, const char *name, const bmemberinfo *lib)
+void be_regclass(bvm *vm, const char *name, const bnfuncinfo *lib)
 {
-    bstring *s = be_newconststr(vm, name); /* immediate reference must be made, prevent GC. */
+    bstring *s = be_newstr(vm, name); /* immediate reference must be made, prevent GC. */
     int idx = be_globalvar_new(vm, s);   /* because relloc is possible, index must first figure out. */
     bclass *c = be_newclass(vm, s, NULL);
     bvalue *var = be_globalvar(vm, idx); /* attention evaluation order. */
@@ -74,7 +74,7 @@ int be_type(bvm *vm, int index)
 
 void be_pop(bvm *vm, int n)
 {
-    vm->top -= n;
+    be_stackpop(vm, n);
 }
 
 int be_absindex(bvm *vm, int index)
@@ -169,6 +169,12 @@ int be_ismap(bvm *vm, int index)
     return var_ismap(v);
 }
 
+int be_iscomptr(bvm *vm, int index)
+{
+    bvalue *v = index2value(vm, index);
+    return var_istype(v, BE_COMPTR);
+}
+
 int be_toint(bvm *vm, int index)
 {
     bvalue *v = index2value(vm, index);
@@ -187,7 +193,7 @@ breal be_toreal(bvm *vm, int index)
     return (breal)0.0;
 }
 
-bbool be_tobool(bvm *vm, int index)
+int be_tobool(bvm *vm, int index)
 {
     bvalue *v = index2value(vm, index);
     return var_tobool(v) != bfalse;
@@ -203,6 +209,12 @@ const char* be_tostring(bvm *vm, int index)
     return str(var_tostr(v));
 }
 
+void* be_tocomptr(bvm *vm, int index)
+{
+    bvalue *v = index2value(vm, index);
+    return var_toobj(v);
+}
+
 void be_moveto(bvm *vm, int from, int to)
 {
     bvalue *src = index2value(vm, from);
@@ -212,38 +224,39 @@ void be_moveto(bvm *vm, int from, int to)
 
 void be_pushnil(bvm *vm)
 {
-    bvalue *reg = pushtop(vm);
+    bvalue *reg = be_incrtop(vm);
     var_setnil(reg);
 }
 
 void be_pushbool(bvm *vm, int b)
 {
-    bvalue *reg = pushtop(vm);
+    bvalue *reg = be_incrtop(vm);
     var_setbool(reg, b != 0);
 }
 
 void be_pushint(bvm *vm, bint i)
 {
-    bvalue *reg = pushtop(vm);
+    bvalue *reg = be_incrtop(vm);
     var_setint(reg, i);
 }
 
 void be_pushreal(bvm *vm, breal r)
 {
-    bvalue *reg = pushtop(vm);
+    bvalue *reg = be_incrtop(vm);
     var_setreal(reg, r);
 }
 
 void be_pushstring(bvm *vm, const char *str)
 {
-    bvalue *reg = pushtop(vm);
+    bvalue *reg = be_incrtop(vm);
     bstring *s = be_newstr(vm, str);
+    be_assert(reg < vm->stacktop);
     var_setstr(reg, s);
 }
 
-void be_pushnstring(bvm *vm, const char *str, int n)
+void be_pushnstring(bvm *vm, const char *str, size_t n)
 {
-    bvalue *reg = pushtop(vm);
+    bvalue *reg = be_incrtop(vm);
     bstring *s = be_newstrn(vm, str, n);
     var_setstr(reg, s);
 }
@@ -262,32 +275,38 @@ void be_pushvalue(bvm *vm, int index)
 {
     bvalue *reg = vm->top;
     var_setval(reg, index2value(vm, index));
-    pushtop(vm);
+    be_incrtop(vm);
 }
 
-void be_pushntvclosure(bvm *vm, bcfunction f, int nupvals)
+void be_pushntvclosure(bvm *vm, bntvfunc f, int nupvals)
 {
-    bvalue *top = pushtop(vm);
+    bvalue *top = be_incrtop(vm);
     bntvclos *cl = be_newprimclosure(vm, f, nupvals);
     var_setntvclos(top, cl);
 }
 
-void be_pushntvfunction(bvm *vm, bcfunction f)
+void be_pushntvfunction(bvm *vm, bntvfunc f)
 {
-    bvalue *top = pushtop(vm);
-    var_setntvfunc(top, (void*)f);
+    bvalue *top = be_incrtop(vm);
+    var_setntvfunc(top, f);
 }
 
-void be_pushclass(bvm *vm, const char *name, const bmemberinfo *lib)
+void be_pushclass(bvm *vm, const char *name, const bnfuncinfo *lib)
 {
     bstring *s;
     bclass *c;
-    bvalue *dst = pushtop(vm);
+    bvalue *dst = be_incrtop(vm);
     s = be_newstr(vm, name);
     var_setstr(dst, s);
     c = be_newclass(vm, s, NULL);
     var_setclass(dst, c);
     class_init(vm, c, lib); /* bind members */
+}
+
+void be_pushcomptr(bvm *vm, void *ptr)
+{
+    bvalue *top = be_incrtop(vm);
+    var_setobj(top, BE_COMPTR, ptr);
 }
 
 void be_removeone(bvm *vm, int index)
@@ -309,14 +328,14 @@ void be_strconcat(bvm *vm, int index)
         var_setstr(dst, s);
     } else {
         var_setnil(dst);
-        be_printf("strconcat error: object not string.\n");
+        be_writestring("strconcat error: object not string.\n");
     }
 }
 
 void be_getsuper(bvm *vm, int index)
 {
     bvalue *v = index2value(vm, index);
-    bvalue *top = pushtop(vm);
+    bvalue *top = be_incrtop(vm);
 
     if (var_isclass(v)) {
         bclass *c = var_toobj(v);
@@ -356,21 +375,30 @@ const char* be_classname(bvm *vm, int index)
     return NULL;
 }
 
+int be_strlen(bvm *vm, int index)
+{
+    bvalue *v = index2value(vm, index);
+    if (var_isstr(v)) {
+        return str_len(var_tostr(v));
+    }
+    return 0;
+}
+
 void be_newlist(bvm *vm)
 {
-    bvalue *top = pushtop(vm);
+    bvalue *top = be_incrtop(vm);
     var_setobj(top, BE_LIST, be_list_new(vm));
 }
 
 void be_newmap(bvm *vm)
 {
-    bvalue *top = pushtop(vm);
+    bvalue *top = be_incrtop(vm);
     var_setobj(top, BE_MAP, be_map_new(vm));
 }
 
 void be_getglobal(bvm *vm, const char *name)
 {
-    bvalue *top = pushtop(vm);
+    bvalue *top = be_incrtop(vm);
     int idx = be_globalvar_find(vm, be_newstr(vm, name));
     bvalue *gbl = be_globalvar(vm, idx);
     *top = *gbl;
@@ -389,7 +417,7 @@ void be_setmember(bvm *vm, int index, const char *k)
 void be_getmember(bvm *vm, int index, const char *k)
 {
     bvalue *o = index2value(vm, index);
-    bvalue *top = pushtop(vm);
+    bvalue *top = be_incrtop(vm);
     if (var_isinstance(o)) {
         binstance *obj = var_toobj(o);
         be_instance_member(obj, be_newstr(vm, k), top);
@@ -402,7 +430,7 @@ void be_getindex(bvm *vm, int index)
 {
     bvalue *o = index2value(vm, index);
     bvalue *k = index2value(vm, -1);
-    bvalue *dst = pushtop(vm);
+    bvalue *dst = be_incrtop(vm);
     switch (var_type(o)) {
     case BE_LIST:
         if (var_isint(k)) {
@@ -464,7 +492,7 @@ void be_setindex(bvm *vm, int index)
 void be_getupval(bvm *vm, int index, int pos)
 {
     bvalue *f = index2value(vm, index);
-    bvalue *top = pushtop(vm);
+    bvalue *top = be_incrtop(vm);
     if (var_istype(f, BE_NTVCLOS)) {
         bntvclos *nf = var_toobj(f);
         bvalue *uv = be_ntvclos_upval(nf, pos)->value;
@@ -488,7 +516,7 @@ void be_setupval(bvm *vm, int index, int pos)
 void be_getfunction(bvm *vm)
 {
     bvalue *v = retreg(vm);
-    bvalue *top = pushtop(vm);
+    bvalue *top = be_incrtop(vm);
     if (var_istype(v, BE_NTVCLOS)) {
         var_setval(top, v);
     } else {
@@ -499,7 +527,7 @@ void be_getfunction(bvm *vm)
 void be_getsize(bvm *vm, int index)
 {
     bvalue *v = index2value(vm, index);
-    bvalue *dst = pushtop(vm);
+    bvalue *dst = be_incrtop(vm);
     if (var_islist(v)) {
         blist *list = cast(blist*, var_toobj(v));
         var_setint(dst, be_list_count(list));
@@ -597,12 +625,12 @@ int be_pushiter(bvm *vm, int index)
 {
     bvalue *v = index2value(vm, index);
     if (var_ismap(v)) {
-        bvalue *iter = pushtop(vm);
+        bvalue *iter = be_incrtop(vm);
         var_setobj(iter, BE_COMPTR, NULL);
         return 1;
     } else if (var_islist(v)) {
         blist *list = var_toobj(v);
-        bvalue *iter = pushtop(vm);
+        bvalue *iter = be_incrtop(vm);
         var_setobj(iter, BE_COMPTR, be_list_data(list) - 1);
         return 1;
     }
@@ -612,7 +640,7 @@ int be_pushiter(bvm *vm, int index)
 static int list_next(bvm *vm)
 {
     bvalue *iter = index2value(vm, -1);
-    bvalue *next, *dst = pushtop(vm);
+    bvalue *next, *dst = be_incrtop(vm);
     next = cast(bvalue*, var_toobj(iter)) + 1;
     var_setobj(iter, BE_COMPTR, next);
     var_setval(dst, next);
@@ -676,7 +704,39 @@ int be_hasnext(bvm *vm, int index)
     return 0;
 }
 
-int be_return(bvm *vm)
+int be_refcontains(bvm *vm, int index)
+{
+    bvalue *v = index2value(vm, index);
+    binstance **ref = be_stack_base(&vm->refstack);
+    binstance **top = be_stack_top(&vm->refstack);
+    binstance *ins = var_toobj(v);
+    be_assert(var_isinstance(v));
+    if (ref) {
+        while (ref <= top && *ref != ins) {
+            ++ref;
+        }
+        return ref <= top;
+    }
+    return 0;
+}
+
+void be_refpush(bvm *vm, int index)
+{
+    bvalue *v = index2value(vm, index);
+    binstance *ins = var_toobj(v);
+    be_assert(var_isinstance(v));
+    be_stack_push(&vm->refstack, &ins);
+}
+
+void be_refpop(bvm *vm)
+{
+    be_stack_pop(&vm->refstack);
+    if (be_stack_isempty(&vm->refstack)) {
+        be_vector_release(&vm->refstack);
+    }
+}
+
+int be_returnvalue(bvm *vm)
 {
     bvalue *src = vm->top - 1;
     bvalue *ret = retreg(vm);
@@ -684,7 +744,7 @@ int be_return(bvm *vm)
     return 0;
 }
 
-int be_returnnil(bvm *vm)
+int be_returnnilvalue(bvm *vm)
 {
     bvalue *ret = retreg(vm);
     var_setnil(ret);
@@ -710,9 +770,9 @@ int be_loadbuffer(bvm *vm,
     int res = be_protectedparser(vm, name, buffer, length);
 #if 0
     if (!res) {
-        be_printf("bytecode:\n");
+        be_writestring("bytecode:\n");
         be_dprintcode(var_toobj(vm->top - 1));
-        be_printf("bytecode end.\n");
+        be_writestring("bytecode end.\n");
     }
 #endif
     return res;

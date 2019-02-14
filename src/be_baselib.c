@@ -1,4 +1,4 @@
-#include "be_baselib.h"
+#include "be_object.h"
 #include "be_mem.h"
 #include <time.h>
 #include <stdlib.h>
@@ -8,19 +8,21 @@ static int l_print(bvm *vm)
 {
     int i, n = be_top(vm);
     for (i = 1; i <= n; ++i) {
-        be_printf("%s", be_tostring(vm, i));
+        const char *str = be_tostring(vm, i);
+        size_t len = be_strlen(vm, i);
+        be_fwrite(stdout, str, len);
         if (i < n) {
-            be_printf(" ");
+            be_fwrite(stdout, " ", 1);
         }
     }
-    be_printf("\n");
-    return be_returnnil(vm);
+    be_fwrite(stdout, "\n", 1);
+    be_return_nil(vm);
 }
 
 static int l_clock(bvm *vm)
 {
     be_pushreal(vm, clock() / (breal)CLOCKS_PER_SEC);
-    return be_return(vm);
+    be_return(vm);
 }
 
 static int l_exit(bvm *vm)
@@ -29,7 +31,8 @@ static int l_exit(bvm *vm)
     if (be_isint(vm, -1)) {
         status = be_toint(vm, -1);
     }
-    exit(status);
+    be_exit(vm, status);
+    be_return_nil(vm);
 }
 
 static int l_memcount(bvm *vm)
@@ -40,20 +43,20 @@ static int l_memcount(bvm *vm)
     } else {
         be_pushreal(vm, (breal)count);
     }
-    return be_return(vm);
+    be_return(vm);
 }
 
 static int l_super(bvm *vm)
 {
     be_getsuper(vm, 1);
-    return be_return(vm);
+    be_return(vm);
 }
 
 static int l_type(bvm *vm)
 {
     const char *t = be_typename(vm, 1);
     be_pushstring(vm, t);
-    return be_return(vm);
+    be_return(vm);
 }
 
 static int l_classname(bvm *vm)
@@ -64,7 +67,7 @@ static int l_classname(bvm *vm)
     } else {
         be_pushnil(vm);
     }
-    return be_return(vm);
+    be_return(vm);
 }
 
 static int l_number(bvm *vm)
@@ -72,17 +75,11 @@ static int l_number(bvm *vm)
     if (be_isstring(vm, 1)) {
         const char *str = be_tostring(vm, 1);
         be_str2num(vm, str);
-        return be_return(vm);
+        be_return(vm);
     } else if (be_isnumber(vm, -1)) {
-        return be_return(vm);
+        be_return(vm);
     }
-    return be_returnnil(vm);
-}
-
-static int l_random(bvm *vm)
-{
-    be_pushint(vm, rand());
-    return be_return(vm);
+    be_return_nil(vm);
 }
 
 static int l_iterator(bvm *vm)
@@ -92,9 +89,9 @@ static int l_iterator(bvm *vm)
         be_pushvalue(vm, 1);
         be_call(vm, 1);
         be_pop(vm, 1);
-        return be_return(vm);
+        be_return(vm);
     }
-    return be_returnnil(vm);
+    be_return_nil(vm);
 }
 
 static int l_hasnext(bvm *vm)
@@ -107,7 +104,7 @@ static int l_hasnext(bvm *vm)
     } else {
         be_pushbool(vm, bfalse);
     }
-    return be_return(vm);
+    be_return(vm);
 }
 
 static int l_next(bvm *vm)
@@ -117,18 +114,28 @@ static int l_next(bvm *vm)
         be_pushvalue(vm, 1);
         be_call(vm, 1);
         be_pop(vm, 1);
-        return be_return(vm);
+        be_return(vm);
     }
-    return be_returnnil(vm);
+    be_return_nil(vm);
 }
 
-static int l_string(bvm *vm)
+static int l_str(bvm *vm)
 {
     be_tostring(vm, 1);
-    return be_return(vm);
+    be_return(vm);
 }
 
-void be_loadbaselib(bvm *vm)
+static int l_length(bvm *vm)
+{
+    if (be_isstring(vm, 1)) {
+        be_pushint(vm, be_strlen(vm, 1));
+    } else {
+        be_pushint(vm, 0);
+    }
+    be_return(vm);
+}
+
+void be_load_baselib(bvm *vm)
 {
     be_regcfunc(vm, "print", l_print);
     be_regcfunc(vm, "clock", l_clock);
@@ -138,8 +145,8 @@ void be_loadbaselib(bvm *vm)
     be_regcfunc(vm, "type", l_type);
     be_regcfunc(vm, "classname", l_classname);
     be_regcfunc(vm, "number", l_number);
-    be_regcfunc(vm, "random", l_random);
-    be_regcfunc(vm, "string", l_string);
+    be_regcfunc(vm, "str", l_str);
+    be_regcfunc(vm, "length", l_length);
     be_regcfunc(vm, "__iterator__", l_iterator);
     be_regcfunc(vm, "__hasnext__", l_hasnext);
     be_regcfunc(vm, "__next__", l_next);

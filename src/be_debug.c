@@ -9,22 +9,7 @@
 #include "be_strlib.h"
 #include "be_exec.h"
 #include <stdio.h>
-#include <stdlib.h>
-#include <stdarg.h>
 #include <string.h>
-
-void be_abort(void)
-{
-    exit(0);
-}
-
-void be_printf(const char *format, ...)
-{
-    va_list arg_ptr;
-    va_start(arg_ptr, format);
-    vprintf(format, arg_ptr);
-    va_end(arg_ptr);
-}
 
 static void print_inst(binstruction ins, int pc)
 {
@@ -42,7 +27,7 @@ static void print_inst(binstruction ins, int pc)
     case OP_GETGBL: case OP_SETGBL:
         printf("%s\tR%d\tG:%d\n", be_opcode2str(op), IGET_RA(ins), IGET_Bx(ins));
         break;
-    case OP_MOVE: case OP_SETSUPER: case OP_NEG:
+    case OP_MOVE: case OP_SETSUPER: case OP_NEG: case OP_IMPORT:
         printf("%s\tR%d\tR%d\n", be_opcode2str(op), IGET_RA(ins), IGET_RKB(ins));
         break;
     case OP_JMP:
@@ -130,10 +115,10 @@ static const char* sourceinfo(bvm *vm, char *buf, int deepth)
     while (it > start && it->endpc > pc) {
         --it;
     }
-    sprintf(buf, "%s:%d: (pc: %d)", str(proto->source), it->linenumber, pc);
+    sprintf(buf, "%s:%d:", str(proto->source), it->linenumber);
     return buf;
 #else
-    (void)buf; (void)cf;
+    (void)vm; (void)buf; (void)deepth;
     return "<unknow source>:";
 #endif
 }
@@ -144,7 +129,12 @@ void be_debug_ins_info(bvm *vm)
     bcallframe *cf = vm->cf;
     bproto *proto = cast(bclosure*, var_toobj(cf->func))->proto;
     int pc = cast_int(vm->ip - proto->code);
-    printf("%s %s\t\t", sourceinfo(vm, buf, -1), str(proto->name));
+    const char *srcinfo = sourceinfo(vm, buf, -1);
+    size_t len = strlen(srcinfo) + strlen(str(proto->name)) + 1;
+    printf("%s %s", srcinfo, str(proto->name));
+    for (; len < 40 ; len += 8) {
+        printf("\t");
+    }
     print_inst(*vm->ip, pc);
 }
 
@@ -162,14 +152,14 @@ static void tracestack(bvm *vm)
             be_pushstring(vm, "\t<native>: in native function\n");
         }
         be_strconcat(vm, -2);
-        be_pop(vm, 1);
+        be_stackpop(vm, 1);
     }
     be_pushstring(vm, "\t[C]: in ?");
     be_strconcat(vm, -2);
-    be_pop(vm, 1);
+    be_stackpop(vm, 1);
 }
 
-void addinfo(bvm *vm, const char *msg)
+static void addinfo(bvm *vm, const char *msg)
 {
     bcallframe *cf = vm->cf;
     if (var_isclosure(cf->func)) {
@@ -182,13 +172,8 @@ void addinfo(bvm *vm, const char *msg)
     tracestack(vm);
 }
 
-void be_debug_error(bvm *vm, int errcode, const char *format, ...)
+void be_debug_error(bvm *vm, int errcode, const char *msg)
 {
-    va_list arg_ptr;
-    va_start(arg_ptr, format);
-    be_pushvfstr(vm, format, arg_ptr);
-    va_end(arg_ptr);
-    addinfo(vm, be_tostring(vm, -1));
-    be_removeone(vm, -2);
+    addinfo(vm, msg);
     be_throw(vm, errcode);
 }

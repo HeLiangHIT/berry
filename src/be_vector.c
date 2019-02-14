@@ -5,10 +5,6 @@
 
 #define VECTOR_DEFAULT_SIZE     4
 
-#define addr_pos(a, p)          ((void*)((char*)(a) + (p)))
-#define addr_region(a, s)       (addr_pos((a), sizeof(s)))
-#define addr_base(a, s)         (addr_pos((a), -cast_int(sizeof(s))))
-
 void be_vector_init(bvector *vector, int size)
 {
     vector->capacity = VECTOR_DEFAULT_SIZE;
@@ -31,9 +27,11 @@ void* be_vector_at(bvector *vector, int index)
 
 void be_vector_append(bvector *vector, void *data)
 {
+    int capacity = vector->capacity;
     size_t size = vector->size;
-    if (vector->count >= vector->capacity) {
-        vector->capacity <<= 1; /* capacity *= 2 */
+    if (vector->count >= capacity) {
+        /* capacity *= 2 or reset to default size */
+        vector->capacity = capacity ? capacity << 1 : VECTOR_DEFAULT_SIZE;
         vector->data = be_realloc(vector->data, vector->capacity * size);
         vector->end = (char*)vector->data + vector->count * size;
     } else {
@@ -76,7 +74,12 @@ void be_vector_clear(bvector *vector)
 /* free not used */
 void* be_vector_release(bvector *vector)
 {
-    if (vector->count < vector->capacity) {
+    if (vector->count == 0) {
+        be_free(vector->data);
+        vector->capacity = 0;
+        vector->data = NULL;
+        vector->end = NULL;
+    } else if (vector->count < vector->capacity) {
         size_t size = vector->size;
         /* vector->capacity minimum size is 1 */
         vector->capacity = vector->count < 1 ? 1 : vector->count;

@@ -25,7 +25,6 @@ class mylist : list
                 l.append(self[i])
                 i = i + 1
             end
-            print(l)
             return l
         end
         return nil
@@ -57,7 +56,7 @@ class range
         return it
     end
     def tostring()
-        return '(' + string(self.__lower) + '..' + string(self.__upper) + ')'
+        return '(' + str(self.__lower) + '..' + str(self.__upper) + ')'
     end
 end
 
